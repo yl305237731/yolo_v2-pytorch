@@ -1,3 +1,7 @@
+"""generate anchors
+    # Adapted from Ngoc Anh Huynh:
+    # https://github.com/experiencor/keras-yolo3/gen_anchors.py
+"""
 import random
 import argparse
 import numpy as np
@@ -5,13 +9,13 @@ from tools.util import parse_voc_annotation
 
 
 parser = argparse.ArgumentParser("--------Train yolo-v1--------")
-parser.add_argument('--annos_dir', default='../data/license-plate-dataset-master/dataset/train/annots', type=str, help='annotations xml dir')
-parser.add_argument('--imgs_dir', default='../data/license-plate-dataset-master/dataset/train/images', type=str, help='images dir')
+parser.add_argument('--annos_dir', default='../data/xmls/', type=str, help='annotations xml dir')
+parser.add_argument('--imgs_dir', default='../data/imgs/', type=str, help='images dir')
 parser.add_argument('--anchor_num', default=3, type=int, help="anchor numbers")
 args = parser.parse_args()
 
 
-labels = ["license-plate"]
+labels = []
 
 
 def IOU(ann, centroids):
@@ -37,35 +41,29 @@ def IOU(ann, centroids):
 def avg_IOU(anns, centroids):
     n, d = anns.shape
     sum = 0.
-
     for i in range(anns.shape[0]):
         sum += max(IOU(anns[i], centroids))
-
     return sum / n
 
 
 def print_anchors(centroids):
-    out_string = ''
-
     anchors = centroids.copy()
-
     widths = anchors[:, 0]
     sorted_indices = np.argsort(widths)
 
-    r = "anchors: ["
+    out_string = "anchors(width, height): ["
     for i in sorted_indices:
-        out_string += str(int(anchors[i, 0] * 416)) + ',' + str(int(anchors[i, 1] * 416)) + ', '
-
-    print(out_string[:-2])
+        out_string += "[" + str(int(anchors[i, 0] * 416)) + ', ' + str(int(anchors[i, 1] * 416)) + '], '
+    out_string = out_string[:-2] + "]"
+    print(out_string)
 
 
 def run_kmeans(ann_dims, anchor_num):
     ann_num = ann_dims.shape[0]
-    iterations = 0
     prev_assignments = np.ones(ann_num) * (-1)
     iteration = 0
     old_distances = np.zeros((ann_num, anchor_num))
-
+    random.seed(1)
     indices = [random.randrange(ann_dims.shape[0]) for i in range(anchor_num)]
     centroids = ann_dims[indices]
     anchor_dim = ann_dims.shape[1]

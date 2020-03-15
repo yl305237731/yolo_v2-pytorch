@@ -30,54 +30,49 @@ def custom_collate_fn(batch):
 
 
 class BoundBox:
-    def __init__(self, xmin, ymin, xmax, ymax, c=None, classes=None):
+    def __init__(self, xmin, ymin, xmax, ymax, c, classes=None):
         self.xmin = xmin
         self.ymin = ymin
         self.xmax = xmax
         self.ymax = ymax
 
-        self.c       = c
+        self.c = c
         self.classes = classes
-
-        self.label = -1
+        self.label = np.argmax(self.classes)
         self.score = -1
-
-    def get_class_index(self):
-        if self.label == -1:
-            self.label = np.argmax(self.classes)
-
-        return self.label
 
     def get_score(self):
         if self.score == -1:
-            self.score = self.classes[self.get_class_index()]
+            self.score = self.classes[self.label >= 0 if self.label else 0]
 
         return self.score
 
 
-def decode_netout(netout, anchors, confidence_thresh=0.8, net_h=416, net_w=416):
+def decode_netout(netout, anchors, confidence_thresh, net_h=416, net_w=416):
     grid_h, grid_w = netout.shape[:2]
     nb_box = len(anchors)
+    netout = netout.view(nb_box, -1, grid_w * grid_h)
+    netout_mask = (netout[:, 4, :].sigmoid_() >= confidence_thresh).float()
+    obj_grids = list(zip(*torch.where(netout_mask == 1)))
     boxes = []
 
-    for i in range(grid_h*grid_w):
-        row = i // grid_w
-        col = i % grid_w
-        for b in range(nb_box):
-            box = netout[row, col, b, :]
-            if box[4] < confidence_thresh:
-                continue
-            x, y, w, h = box[0], box[1], box[2], box[3]
-            anchor_w = anchors[b][0]
-            anchor_h = anchors[b][1]
-            x = (x + col) / grid_w * net_w
-            y = (y + row) / grid_h * net_h
-            w = anchor_w * np.exp(w)
-            h = anchor_h * np.exp(h)
-            classes = netout[row, col, b, 5:]
-            box = BoundBox(x-w/2, y-h/2, x+w/2, y+h/2, box[4], classes)
-            boxes.append(box)
-
+    for ii in obj_grids:
+        anchor_index = ii[0]
+        grid_index = ii[1]
+        box = netout[anchor_index, :, grid_index]
+        row = grid_index // grid_h
+        col = grid_index % grid_w
+        x, y, w, h = box[0].sigmoid(), box[1].sigmoid(), box[2], box[3]
+        anchor_w = anchors[anchor_index][0]
+        anchor_h = anchors[anchor_index][1]
+        x = (x + col) * (net_w / grid_w)
+        y = (y + row) * (net_h / grid_h)
+        w = anchor_w * np.exp(w)
+        h = anchor_h * np.exp(h)
+        with torch.no_grad():
+            classes = torch.nn.functional.softmax(box[5:], 0)
+        box = BoundBox(x - w / 2, y - h / 2, x + w / 2, y + h / 2, box[4], classes)
+        boxes.append(box)
     return boxes
 
 
@@ -127,6 +122,7 @@ def do_nms(boxes, nms_thresh=0.4):
                 index_j = sorted_indices[j]
                 if iou(boxes[index_i], boxes[index_j]) >= nms_thresh:
                     boxes[index_j].classes[c] = 0
+                    boxes[index_j].label = -1
 
 
 def preprocess_input(image, net_w, net_h):
@@ -136,26 +132,18 @@ def preprocess_input(image, net_w, net_h):
     return torch.unsqueeze(transform(resized), dim=0)
 
 
-def draw_boxes(image, boxes, labels, obj_thresh=0.8):
+def draw_boxes(image, boxes, labels):
     for box in boxes:
-        label_str = ''
-        label = -1
-
-        for i in range(len(labels)):
-            if box.classes[i] > obj_thresh:
-                if label_str != '':
-                    label_str += ', '
-                label_str += (labels[i] + ' ' + str(box.get_score().numpy()) + '%')
-                label = i
+        label = box.label
         if label >= 0:
-            cv2.rectangle(img=image, pt1=(box.xmin, box.ymin), pt2=(box.xmax, box.ymax), color=(255, 0, 255),
-                          thickness=5)
+            label_str = str(labels[label] + ',' + str(box.c.numpy()))
+            cv2.rectangle(img=image, pt1=(box.xmin, box.ymin), pt2=(box.xmax, box.ymax), color=(255, 0, 255), thickness=2)
             cv2.putText(img=image,
                         text=label_str,
                         org=(box.xmin + 13, box.ymin - 13),
                         fontFace=cv2.FONT_HERSHEY_SIMPLEX,
                         fontScale=1e-3 * image.shape[0],
-                        color=(0, 0, 0),
+                        color=(255, 0, 0),
                         thickness=2)
     return image
 
@@ -202,3 +190,7 @@ def parse_voc_annotation(ann_dir, img_dir, labels=[]):
         if len(img['object']) > 0:
             all_insts += [img]
     return all_insts
+
+
+def to_cpu(x):
+    return x.detach().cpu()

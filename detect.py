@@ -5,7 +5,7 @@ import torch
 import cv2
 import torch.backends.cudnn as cudnn
 import time
-from vision.yolo_v2 import YoloV2
+from vision.network import YoloV2
 from tools.util import decode_netout, correct_yolo_boxes, do_nms, draw_boxes, preprocess_input
 
 
@@ -14,19 +14,16 @@ parser.add_argument('-m', '--trained_model', default='./weights/Final.pth',
                     type=str, help='Trained state_dict file path to open')
 parser.add_argument('--save_folder', default='./result', type=str, help='Dir to save img')
 parser.add_argument('--cpu', default=True, help='Use cpu inference')
-parser.add_argument('--confidence_threshold', default=0.8, type=float, help='confidence_threshold')
-parser.add_argument('--class_threshold', default=0.8, type=float, help='class threshold')
+parser.add_argument('--confidence_threshold', default=0.9, type=float, help='confidence_threshold')
 parser.add_argument('--nms_threshold', default=0.3, type=float, help='nms_threshold')
-parser.add_argument('--anchors', default=[[23, 11], [35, 17], [68, 33]], type=list, help="anchor size[w, h]")
+parser.add_argument('--anchors', default=[], type=list, help="anchor size[w, h]")
 parser.add_argument('--net_w', default=416, type=int)
 parser.add_argument('--net_h', default=416, type=int)
 parser.add_argument('--input_path', default='test.jpg', type=str, help="image or images dir")
 args = parser.parse_args()
 
-class_name = ["person", "bird", "cat", "cow", "dog", "horse", "sheep", "aeroplane", "bicycle", "boat", "bus", "car", "motorbike",
-              "train", "bottle", "chair", "dining", "table", "potted plant", "sofa", "tvmonitor"]
-labels = ['license-plate']
 
+labels = [""]
 
 if __name__ == '__main__':
     torch.set_grad_enabled(False)
@@ -40,7 +37,6 @@ if __name__ == '__main__':
 
     cpu = args.cpu
     confidence_threshold = args.confidence_threshold
-    class_threshold = args.class_threshold
     nms_thresh = args.nms_threshold
     anchors = args.anchors
     class_num = len(labels)
@@ -73,10 +69,10 @@ if __name__ == '__main__':
         img_h, img_w, _ = img.shape
         img = preprocess_input(img, net_h, net_w).to(device)
         net_out = net(img)
-        boxes = decode_netout(torch.squeeze(net_out, dim=0), anchors=anchors, confidence_thresh=confidence_threshold, net_w=net_w, net_h=net_h, nb_box=len(anchors))
+        boxes = decode_netout(torch.squeeze(net_out, dim=0), anchors=anchors, confidence_thresh=confidence_threshold, net_w=net_w, net_h=net_h)
         correct_yolo_boxes(boxes, img_h, img_w, net_h, net_w)
         do_nms(boxes, nms_thresh)
-        image = draw_boxes(image, boxes, labels, class_threshold)
+        image = draw_boxes(image, boxes, labels)
         cv2.imwrite(os.path.join(save_folder, img_path.split('/')[-1]), image)
         end = time.time()
         print("per image tiem: {}".format(end - begin))

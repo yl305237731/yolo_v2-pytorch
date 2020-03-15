@@ -82,7 +82,10 @@ class VOCDataSet(Dataset):
                     y_max = int(float(box.find('ymax').text))
                     label_index = self.get_label_index(name)
                     box_info.append([x_min, y_min, x_max, y_max, label_index])
-            img_bboxs.append(box_info)
+            if len(box_info) <= 0:
+                img_names.remove(img_name)
+            else:
+                img_bboxs.append(box_info)
         return img_names, img_bboxs
 
     def imshow(self, img, bboxs, widname=' '):

@@ -2,11 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+from tools.util import to_cpu
 
 
 class YoloLossLayer(nn.Module):
-    def __init__(self, anchors, class_number, reduction, coord_scale=5.0, noobj_scale=1,
-                 obj_scale=5.0, class_scale=1.0, obj_thresh=0.6, use_gpu=False):
+    def __init__(self, anchors, class_number, reduction, warmup_batches, coord_scale=5.0, noobj_scale=1,
+                 obj_scale=5, class_scale=1.0, obj_thresh=0.5, net_factor=(416, 416), use_gpu=False, hard_conf=True):
         super(YoloLossLayer, self).__init__()
         self.anchor_number = len(anchors)
         self.anchors = torch.Tensor(anchors)
@@ -17,7 +18,11 @@ class YoloLossLayer(nn.Module):
         self.obj_scale = obj_scale
         self.class_scale = class_scale
         self.obj_thresh = obj_thresh
+        self.warmup_batches = warmup_batches
         self.use_gpu = use_gpu
+        self.hard_conf = hard_conf
+        self.warmup_keeper = 0
+        self.net_factor = net_factor
 
     def forward(self, net_out, ground_truth):
 
@@ -30,6 +35,11 @@ class YoloLossLayer(nn.Module):
 
         if self.use_gpu:
             coords = coords.cuda()
+
+        true_box_xy = targets[:, :, 0:2, :]
+        true_box_wh = targets[:, :, 2:4, :]
+        xywh_mask = anchor_mask
+
         coords[:, :, :2, :] = net_out[:, :, :2, :].sigmoid()
         coords[:, :, 2:4, :] = net_out[:, :, 2:4, :]
         conf = net_out[:, :, 4, :].sigmoid()
@@ -40,9 +50,35 @@ class YoloLossLayer(nn.Module):
         t_clas = targets[:, :, 5, :].view(batch_size * self.anchor_number, 1, grid_h * grid_w).transpose(1, 2).contiguous().view(-1, 1).long()
         clas_loss = F.cross_entropy(clas, t_clas.squeeze(dim=1), reduction='none') * clas_mask.squeeze(dim=1)
 
+        # In the warm-up phase, let the grid without the target learn the aspect ratio of the anchor.
+        if self.warmup_keeper < self.warmup_batches:
+            self.warmup_batches += batch_size
+            true_box_xy = (true_box_xy + 0.5) * (1 - anchor_mask) + true_box_xy
+            xywh_mask = torch.ones_like(anchor_mask)
+
+            if self.use_gpu:
+                xywh_mask = xywh_mask.cuda()
+
         # coords loss
-        t_coords = targets[:, :, :4, :]
-        coords_loss = F.mse_loss(coords, t_coords, reduction='none') * anchor_mask
+        anchor_w = self.anchors[:, 0].contiguous().view(self.anchor_number, 1)
+        anchor_h = self.anchors[:, 1].contiguous().view(self.anchor_number, 1)
+
+        if self.use_gpu:
+            anchor_w = anchor_w.cuda()
+            anchor_h = anchor_h.cuda()
+
+        t_w_scale = true_box_wh[:, :, 0, :].exp() * anchor_w / self.net_factor[0]
+        t_h_scale = true_box_wh[:, :, 1, :].exp() * anchor_h / self.net_factor[1]
+
+        p_w_scale = coords[:, :, 2, :].exp() * anchor_w / self.net_factor[0]
+        p_h_scale = coords[:, :, 3, :].exp() * anchor_h / self.net_factor[1]
+
+        true_wh_scale = torch.cat([torch.unsqueeze(t_w_scale, 2), torch.unsqueeze(t_h_scale, 2)], dim=2)
+        pre_wh_scale = torch.cat([torch.unsqueeze(p_w_scale, 2), torch.unsqueeze(p_h_scale, 2)], dim=2)
+
+        xy_loss = F.mse_loss(coords[:, :, :2, :], true_box_xy, reduction='none') * xywh_mask
+        wh_loss = F.mse_loss(pre_wh_scale, true_wh_scale, reduction='none') * xywh_mask
+        coords_loss = xy_loss.sum() + wh_loss.sum()
 
         # confidence loss
         # 1. object confidence loss
@@ -53,34 +89,59 @@ class YoloLossLayer(nn.Module):
         # 2.1 grid has no object
         noobj_conf_loss1 = F.mse_loss(conf, t_conf, reduction='none') * (1 - obj_mask)
 
-        # 2.2 grid has object, but the anchor not response to object, if iou > 0.6, dont calculate loss, else as background
+        # 2.2 grid has object, but the anchor not responsible for object, if iou > obj_thresh, don't calculate loss,
+        # else as background
 
         no_response_anchors_mask = (1 - conf_mask) * obj_mask
-        grid_predicts = self.to_grid_coords(coords, grid_h, grid_w)
-        grid_gts = self.to_grid_coords(t_coords, grid_h, grid_w)
-        iou_gt_pred_mask = (self.compute_iou(grid_predicts, grid_gts) < self.obj_thresh).float()
+        grid_predicts = self.to_grid_coords(coords, grid_h, grid_w, anchor_w, anchor_h)
+        grid_gts = self.to_grid_coords(targets[:, :, 0:4, :], grid_h, grid_w, anchor_w, anchor_h)
+
+        iou_scores = self.compute_iou(grid_predicts, grid_gts)
+        iou_gt_pred_mask = (iou_scores < self.obj_thresh).float()
+
         noobj_conf_loss2 = F.mse_loss(conf, t_conf, reduction='none') * no_response_anchors_mask * iou_gt_pred_mask
 
         noobj_conf_loss = noobj_conf_loss1 + noobj_conf_loss2
-        total_loss = clas_loss.mean() * self.class_scale + coords_loss.mean() * self.coord_scale + \
-                     obj_conf_loss.mean() * self.obj_scale + noobj_conf_loss.mean() * self.noobj_scale
+        total_loss = clas_loss.sum() * self.class_scale + coords_loss * self.coord_scale + \
+                     obj_conf_loss.sum() * self.obj_scale + noobj_conf_loss.sum() * self.noobj_scale
+
+        # Compute some online statistics
+        count = conf_mask.sum()
+        count_noobj = (1 - obj_mask).sum()
+        recall_50 = ((iou_scores >= 0.5).float() * conf_mask).sum() / (count + 1e-3)
+        recall_75 = ((iou_scores >= 0.75).float() * conf_mask).sum() / (count + 1e-3)
+        avg_iou = (iou_scores * conf_mask).sum() / (count + 1e-3)
+        avg_obj = (conf * conf_mask).sum() / (count + 1e-3)
+        avg_noobj = (conf * (1 - obj_mask)).sum() / (count_noobj + 1e-3)
+        obj_conf = list(zip(*torch.where(conf * conf_mask)))
+
+        for i in range(len(obj_conf)):
+            print(" obj {}  confidence: {}, prids coords: {}, t_coords: {}".format(i, conf[obj_conf[i]],
+                  to_cpu(grid_predicts[obj_conf[i][0], obj_conf[i][1], :, obj_conf[i][2]]),
+                  to_cpu(grid_gts[obj_conf[i][0], obj_conf[i][1], :, obj_conf[i][2]])))
+        print(" avg_obj_conf: {}\n avg_noobj_cof: {}\n avg_iou: {}\n count obj: {}\n count noobj: {}\n iou > 50 recall:"
+              "{}\n iou >75 recall: {}".format(avg_obj, avg_noobj, avg_iou, count, count_noobj, recall_50, recall_75))
+
         print("total loss: {}, class loss: {}, coords loss: {}, obj_conf loss: {}, noobj_conf loss: {}".format(
-            total_loss, clas_loss.sum(), coords_loss.sum(), obj_conf_loss.sum(), noobj_conf_loss.sum()))
+            total_loss, clas_loss.sum() * self.class_scale, coords_loss * self.coord_scale, obj_conf_loss.sum() *
+            self.obj_scale, noobj_conf_loss.sum() * self.noobj_scale))
+        print("--------------------------------------------------------")
+
         return total_loss
 
-    def to_grid_coords(self, coords, grid_h, grid_w):
+    def to_grid_coords(self, coords, grid_h, grid_w, anchor_w, anchor_h):
         col_index = torch.arange(0, grid_w).repeat(grid_h, 1).view(grid_h * grid_w)
         row_index = torch.arange(0, grid_h).repeat(grid_w, 1).t().contiguous().view(grid_h * grid_h)
-        anchor_w = self.anchors[:, 0].contiguous().view(self.anchor_number, 1)
-        anchor_h = self.anchors[:, 1].contiguous().view(self.anchor_number, 1)
         grid_boxs = torch.zeros_like(coords)
         if self.use_gpu:
-            grid_boxs.cuda()
+            col_index = col_index.cuda()
+            row_index = row_index.cuda()
+            grid_boxs = grid_boxs.cuda()
         # to grid size
-        grid_boxs[:, :, 0, :] = coords[:, :, 0, :] + col_index.float()
-        grid_boxs[:, :, 1, :] = coords[:, :, 1, :] + row_index.float()
-        grid_boxs[:, :, 2, :] = coords[:, :, 2, :].exp() * anchor_w / self.reduction
-        grid_boxs[:, :, 3, :] = coords[:, :, 3, :].exp() * anchor_h / self.reduction
+        grid_boxs[:, :, 0, :] = (coords[:, :, 0, :] + col_index.float()) / grid_w * self.net_factor[0]
+        grid_boxs[:, :, 1, :] = (coords[:, :, 1, :] + row_index.float()) / grid_h * self.net_factor[1]
+        grid_boxs[:, :, 2, :] = coords[:, :, 2, :].exp() * anchor_w
+        grid_boxs[:, :, 3, :] = coords[:, :, 3, :].exp() * anchor_h
 
         # to [x1, y1, x2, y2]
         grid_boxs[:, :, 0, :] = grid_boxs[:, :, 0, :] - grid_boxs[:, :, 2, :] / 2
@@ -113,6 +174,7 @@ class YoloLossLayer(nn.Module):
                         best_iou = cur_iou
                         best_anchor_index = ii
 
+                print("obj best iou: {}, best anchor index: {}".format(best_iou, best_anchor_index))
                 anchor_w = self.anchors[best_anchor_index][0]
                 anchor_h = self.anchors[best_anchor_index][1]
                 w = box[2] - box[0]
@@ -125,7 +187,12 @@ class YoloLossLayer(nn.Module):
                 y_offset = yc / self.reduction - row
                 w_log = torch.log(w / anchor_w)
                 h_log = torch.log(h / anchor_h)
-                grid_info = torch.cat([x_offset.view(-1, 1), y_offset.view(-1, 1), w_log.view(-1, 1), h_log.view(-1, 1), best_iou.view(-1, 1), cls.view(-1, 1)], dim=1)
+                # Whether to use IOU as the gt of onf, it is relatively more difficult to train with IOU
+                if self.hard_conf:
+                    obj_conf = best_iou
+                else:
+                    obj_conf = torch.Tensor([1])
+                grid_info = torch.cat([x_offset.view(-1, 1), y_offset.view(-1, 1), w_log.view(-1, 1), h_log.view(-1, 1), obj_conf.view(-1, 1), cls.view(-1, 1)], dim=1)
                 targets[b, best_anchor_index, :, row * grid_w + col] = grid_info.clone()
                 anchor_mask[b, best_anchor_index, :, row * grid_w + col] = 1
                 obj_mask[b, :, row * grid_w + col] = 1
@@ -134,7 +201,7 @@ class YoloLossLayer(nn.Module):
 
     def anchor_iou(self, box, anchor):
         """
-        将box与anchor box 移到左上角重叠, 计算IOU
+        Move the box and anchor box to the top left corner to overlap, calculate IOU
         :param box:
         :param anchor:
         :return:
@@ -154,7 +221,7 @@ class YoloLossLayer(nn.Module):
                 return float(inter_w * inter_h)
 
             area_inter = intersection(box_a, box_b)
-            return area_inter / (area_boxa + area_boxb - area_inter)
+            return area_inter / (area_boxa + area_boxb - area_inter + 1e-5)
 
         box = [0, 0, box[2] - box[0], box[3] - box[1]]
         anchor = [0, 0, anchor[0], anchor[1]]

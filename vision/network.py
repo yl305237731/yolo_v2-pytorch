@@ -4,7 +4,6 @@ import torch.nn.functional as F
 
 
 class SpaceToDepth(nn.Module):
-
     def __init__(self, block_size):
         super().__init__()
         self.bs = block_size
@@ -17,31 +16,31 @@ class SpaceToDepth(nn.Module):
         return x
 
 
-class SeparableConv2D(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride, padding=0):
-        super(SeparableConv2D, self).__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.depth_conv = nn.Conv2d(in_channels=self.in_channels, out_channels=self.in_channels,
-                                    kernel_size=self.kernel_size, stride=self.stride, padding=self.padding,
-                                    groups=self.in_channels)
-        self.bn1 = nn.BatchNorm2d(self.in_channels)
-        self.point_conv = nn.Conv2d(in_channels=self.in_channels, out_channels=self.out_channels,
-                                    kernel_size=(1, 1), stride=(1, 1))
-        self.bn2 = nn.BatchNorm2d(self.out_channels)
-
-    def forward(self, x):
-        x = self.depth_conv(x)
-        x = self.bn1(x)
-        x = F.relu(x)
-        x = self.point_conv(x)
-        x = self.bn2(x)
-        x = F.relu(x)
-
-        return x
+# class SeparableConv2D(nn.Module):
+#     def __init__(self, in_channels, out_channels, kernel_size, stride, padding=0):
+#         super(SeparableConv2D, self).__init__()
+#         self.in_channels = in_channels
+#         self.out_channels = out_channels
+#         self.kernel_size = kernel_size
+#         self.stride = stride
+#         self.padding = padding
+#         self.depth_conv = nn.Conv2d(in_channels=self.in_channels, out_channels=self.in_channels,
+#                                     kernel_size=self.kernel_size, stride=self.stride, padding=self.padding,
+#                                     groups=self.in_channels)
+#         self.bn1 = nn.BatchNorm2d(self.in_channels)
+#         self.point_conv = nn.Conv2d(in_channels=self.in_channels, out_channels=self.out_channels,
+#                                     kernel_size=(1, 1), stride=(1, 1))
+#         self.bn2 = nn.BatchNorm2d(self.out_channels)
+#
+#     def forward(self, x):
+#         x = self.depth_conv(x)
+#         x = self.bn1(x)
+#         x = F.relu(x)
+#         x = self.point_conv(x)
+#         x = self.bn2(x)
+#         x = F.relu(x)
+#
+#         return x
 
 
 class BasicConvBlock(nn.Module):
@@ -63,11 +62,10 @@ class BasicConvBlock(nn.Module):
 
 
 class YoloV2(nn.Module):
-    def __init__(self, class_num, anchor_num=3, target_size=(416, 416)):
+    def __init__(self, class_num, anchor_num=3):
         super(YoloV2, self).__init__()
         self.class_num = class_num
         self.anchor_num = anchor_num
-        self.target_size = target_size
         self.out_channel = (self.class_num + 5) * self.anchor_num
         self.conv1 = nn.Sequential(BasicConvBlock(in_channels=3, out_channels=32, kernel_size=3, stride=1, padding=3//2))
         self.conv2 = nn.Sequential(BasicConvBlock(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=3//2))
