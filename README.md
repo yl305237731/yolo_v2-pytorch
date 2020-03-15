@@ -35,4 +35,4 @@ voc data format
 <div align="center"><img src="result/2008_000803.jpg"></div>
 <div align="center"><img src="result/2008_002631.jpg"></div>
 
-## Due to the lack of equipment and large data sets, i only trained and tested on a part of the VOC 2007 data, and the results were not very good. I must say that training is difficult. So the purpose of this code is just to understand the implementation of yolo-v2.Here is my blog to explain how to build yolo-v2 step by step.[link](XXX)
+## Due to the lack of equipment and large data sets, i only trained and tested on a part of the VOC 2007 data, and the results were not very good. I must say that training is difficult. So the purpose of this code is just to understand the implementation of yolo-v2.
