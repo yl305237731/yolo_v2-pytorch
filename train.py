@@ -22,7 +22,6 @@ parser.add_argument('--net_w', default=416, type=int, help="input image width")
 parser.add_argument('--net_h', default=416, type=int, help="input image height")
 parser.add_argument('--anchors', default=[], type=list, help="anchor size[w, h]")
 parser.add_argument('--max_epoch', default=30, type=int, help="max training epoch")
-parser.add_argument('--warm_epoch', default=3, type=int, help="warmup epoch")
 parser.add_argument('--initial_lr', default=1e-3, type=float, help="initial learning rate")
 parser.add_argument('--gamma', default=0.1, type=float, help="gamma for adjust lr")
 parser.add_argument('--weight_decay', default=5e-4, type=float, help="weights decay")
@@ -113,8 +112,8 @@ if __name__ == '__main__':
     augmentation = VOCDataAugmentation()
     trainSet = VOCDataSet(img_dir=args.imgs_dir, xml_dir=args.annos_dir, name_list=labels, shuffle=True,
                           transform=transform, augmentation=augmentation)
-    warmup_batches = args.warm_epoch * trainSet.__len__() / args.batch_size
+   
     criterion = YoloLossLayer(anchors=args.anchors, class_number=len(labels), reduction=32, use_gpu=use_gpu,
-                              hard_conf=False, warmup_batches=warmup_batches)
+                              hard_conf=False)
     optimizer = torch.optim.Adam(net.parameters(), lr=args.initial_lr, weight_decay=args.weight_decay)
     train(net, optimizer, trainSet, use_gpu)
