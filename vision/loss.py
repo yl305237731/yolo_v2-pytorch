@@ -6,7 +6,7 @@ import math
 
 class YoloLossLayer(nn.Module):
     def __init__(self, anchors, class_number, reduction, coord_scale=5.0, noobj_scale=1,
-                 obj_scale=5, class_scale=1.0, obj_thresh=0.5, net_factor=(416, 416), max_box_per_image=30, use_gpu=False, hard_conf=True):
+                 obj_scale=20, class_scale=1.0, obj_thresh=0.5, max_box_per_image=30, use_gpu=False, hard_conf=True):
         super(YoloLossLayer, self).__init__()
         self.anchor_number = len(anchors)
         self.anchors = torch.Tensor(anchors)
@@ -20,7 +20,6 @@ class YoloLossLayer(nn.Module):
         self.use_gpu = use_gpu
         self.hard_conf = hard_conf
         self.max_box_per_image = max_box_per_image
-        self.net_factor = net_factor
 
     def forward(self, net_out, ground_truth):
         # 网络输出shape
@@ -53,7 +52,7 @@ class YoloLossLayer(nn.Module):
         clas_loss = F.cross_entropy(clas, t_clas.squeeze(dim=1), reduction='none') * clas_mask.squeeze(dim=1)
 
         # coords loss
-        wh_loss_scale = 2.0 - 1.0 * targets[:, :, 2:3, :] * targets[:, :, 3:4, :] / (self.net_factor[0] * self.net_factor[1])
+        wh_loss_scale = 2.0 - 1.0 * targets[:, :, 2:3, :] * targets[:, :, 3:4, :] / (torch.pow(self.reduction, 2) * grid_w * grid_h)
         xy_loss = F.mse_loss(coords[:, :, :2, :], targets[:, :, 0:2, :], reduction='none') * anchor_mask * wh_loss_scale
         wh_loss = F.mse_loss(coords[:, :, 2:4, :], targets[:, :, 2:4, :], reduction='none') * anchor_mask * wh_loss_scale
         coords_loss = xy_loss.sum() + wh_loss.sum()
@@ -100,8 +99,8 @@ class YoloLossLayer(nn.Module):
             row_index = row_index.cuda()
             img_coords = img_coords.cuda()
         # to img coords
-        img_coords[:, :, 0, :] = (coords[:, :, 0, :] + col_index.float()) / grid_w * self.net_factor[0]
-        img_coords[:, :, 1, :] = (coords[:, :, 1, :] + row_index.float()) / grid_h * self.net_factor[1]
+        img_coords[:, :, 0, :] = (coords[:, :, 0, :] + col_index.float()) / grid_w * (self.reduction * grid_w)
+        img_coords[:, :, 1, :] = (coords[:, :, 1, :] + row_index.float()) / grid_h * (self.reduction * grid_h)
         img_coords[:, :, 2, :] = coords[:, :, 2, :].exp() * anchor_w
         img_coords[:, :, 3, :] = coords[:, :, 3, :].exp() * anchor_h
 
