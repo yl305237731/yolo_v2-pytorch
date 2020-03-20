@@ -32,7 +32,10 @@ voc data format
 
 ## test result
 
+### VOC
 <div align="center"><img src="result/2008_000803.jpg"></div>
 <div align="center"><img src="result/2008_002631.jpg"></div>
 
-## Due to the lack of equipment and large data sets, i only trained and tested on a part of the VOC 2007 data, and the results were not very good. I must say that training is difficult. So the purpose of this code is just to understand the implementation of yolo-v2.
+### personal dataset
+
+## Since there are no pre-training weights and large data sets, progressive training is an effective technique. First, overfitting on a small part of the training set and then gradually generalizing. 
