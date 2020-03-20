@@ -37,5 +37,7 @@ voc data format
 <div align="center"><img src="result/2008_002631.jpg"></div>
 
 ### personal dataset
+<div align="center"><img src="result/201606261616187868*1_yilong.jpg"></div>
+<div align="center"><img src="result/201702271259584051*1_feizhu.jpg"></div>
 
 ## Since there are no pre-training weights and large data sets, progressive training is an effective technique. First, overfitting on a small part of the training set and then gradually generalizing. 
