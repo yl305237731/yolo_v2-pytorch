@@ -4,6 +4,7 @@ import datetime
 import argparse
 import os
 import torch
+import random
 from vision.network import YoloV2
 from vision.loss import YoloLossLayer
 from tools.dataloader import VOCDataSet
@@ -20,6 +21,7 @@ parser.add_argument('--annos_dir', default='./data/xmls', type=str, help='annota
 parser.add_argument('--batch_size', default=16, type=int, help="batch size")
 parser.add_argument('--net_w', default=416, type=int, help="input image width")
 parser.add_argument('--net_h', default=416, type=int, help="input image height")
+parser.add_argument('--multi_scale', default=False, type=bool, help="whether use multi scale image to train")
 parser.add_argument('--anchors', default=[], type=list, help="anchor size[w, h]")
 parser.add_argument('--max_epoch', default=30, type=int, help="max training epoch")
 parser.add_argument('--initial_lr', default=1e-3, type=float, help="initial learning rate")
@@ -40,7 +42,7 @@ def train(net, optimizer, trainSet, use_gpu):
     net.train()
     epoch = 0
     print('Loading Dataset...')
-
+    multi_scale = args.multi_scale
     epoch_size = math.ceil(len(trainSet) / args.batch_size)
     max_iter = args.max_epoch * epoch_size
 
@@ -58,6 +60,16 @@ def train(net, optimizer, trainSet, use_gpu):
                     torch.save(net.module.state_dict(), os.path.join(args.weights_save_folder, 'epoch_' + str(epoch) + '.pth'))
                 else:
                     torch.save(net.state_dict(), os.path.join(args.weights_save_folder, 'epoch_' + str(epoch) + '.pth'))
+
+                if multi_scale:
+                    # multi-scale, default [320, 416, 480, 640], must be divisible by 32
+                    # When the number of worker is not 0, there will be some batch_size cache, and the returned GT will not
+                    # change size immediately.
+                    scales = [320, 416, 480, 640]
+                    idx = random.randint(0, len(scales) - 1)
+                    trainSet.target_size = (scales[idx], scales[idx])
+                    print("use multi scale training, change image size to ({}, {})".format(scales[idx], scales[idx]))
+
         load_t0 = time.time()
         if iteration in stepvalues:
             step_index += 1
